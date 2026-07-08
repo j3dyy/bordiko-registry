@@ -1,0 +1,21 @@
+# Go build output
+/registry
+/bin/
+*.exe
+*.test
+*.out
+
+# Local persisted packages (REGISTRY_DATA_DIR)
+.registry-data/
+/data/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.log
