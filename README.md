@@ -24,8 +24,12 @@ gates run before a package can be played (`validate.go`):
 | Var | Default | Purpose |
 | --- | --- | --- |
 | `REGISTRY_ADDR` | `:8082` | Listen address |
-| `REGISTRY_DATA_DIR` | _(unset)_ | Persist packages here; unset → in-memory |
+| `DATABASE_URL` | _(unset)_ | Postgres DSN — stores wasm in `bytea` (**durable**, survives redeploys). Preferred in production. |
+| `REGISTRY_DATA_DIR` | _(unset)_ | Filesystem fallback used only when `DATABASE_URL` is unset; lost on ephemeral redeploys |
 | `REGISTRY_REQUIRE_MODERATION` | _(unset)_ | If `true`, uploads land as `pending` until approved |
+
+Store selection: `DATABASE_URL` (Postgres bytea) → else `REGISTRY_DATA_DIR`
+(filesystem) → else in-memory.
 
 ## HTTP API
 

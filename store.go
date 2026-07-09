@@ -25,10 +25,23 @@ type GameVersion struct {
 	CreatedAt   time.Time       `json:"createdAt"`
 }
 
-// Store keeps published games in memory and, if a data dir is configured,
+// Store persists published game versions and their wasm blobs. Two
+// implementations exist: LocalStore (in-memory + optional filesystem, for
+// dev/single-node) and PostgresStore (durable across ephemeral redeploys, used
+// when DATABASE_URL is set). The catalog server depends only on this interface.
+type Store interface {
+	Publish(v *GameVersion, wasm []byte) error
+	ListLatest() []GameVersion
+	Versions(gameID string) []GameVersion
+	LoadWasm(gameID, version string) ([]byte, *GameVersion, bool)
+	SetStatus(gameID, version, status string) bool
+	Close() error
+}
+
+// LocalStore keeps published games in memory and, if a data dir is configured,
 // persists each publish to disk (and reloads on startup) so the catalog
 // survives restarts. The wasm blobs live beside the metadata.
-type Store struct {
+type LocalStore struct {
 	mu    sync.RWMutex
 	games map[string][]*GameVersion // gameID -> versions in publish order
 	blobs map[string][]byte         // "gameID@version" -> wasm
@@ -38,8 +51,8 @@ type Store struct {
 
 func blobKey(gameID, version string) string { return gameID + "@" + version }
 
-func NewStore(dir string, now func() time.Time) (*Store, error) {
-	s := &Store{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, dir: dir, now: now}
+func NewLocalStore(dir string, now func() time.Time) (*LocalStore, error) {
+	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, dir: dir, now: now}
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -52,7 +65,7 @@ func NewStore(dir string, now func() time.Time) (*Store, error) {
 }
 
 // Publish records a validated game version (and its wasm), optionally to disk.
-func (s *Store) Publish(v *GameVersion, wasm []byte) error {
+func (s *LocalStore) Publish(v *GameVersion, wasm []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, existing := range s.games[v.GameID] {
@@ -69,7 +82,7 @@ func (s *Store) Publish(v *GameVersion, wasm []byte) error {
 }
 
 // ListLatest returns the latest PUBLISHED version of each game.
-func (s *Store) ListLatest() []GameVersion {
+func (s *LocalStore) ListLatest() []GameVersion {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := []GameVersion{}
@@ -88,7 +101,7 @@ func (s *Store) ListLatest() []GameVersion {
 	return out
 }
 
-func (s *Store) Versions(gameID string) []GameVersion {
+func (s *LocalStore) Versions(gameID string) []GameVersion {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	out := []GameVersion{}
@@ -100,7 +113,7 @@ func (s *Store) Versions(gameID string) []GameVersion {
 
 // LoadWasm returns the wasm for a game version. An empty version means "the
 // latest published version".
-func (s *Store) LoadWasm(gameID, version string) ([]byte, *GameVersion, bool) {
+func (s *LocalStore) LoadWasm(gameID, version string) ([]byte, *GameVersion, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if version == "" {
@@ -129,7 +142,7 @@ func (s *Store) LoadWasm(gameID, version string) ([]byte, *GameVersion, bool) {
 }
 
 // SetStatus updates a version's moderation status (published/pending/rejected).
-func (s *Store) SetStatus(gameID, version, status string) bool {
+func (s *LocalStore) SetStatus(gameID, version, status string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, v := range s.games[gameID] {
@@ -145,11 +158,11 @@ func (s *Store) SetStatus(gameID, version, status string) bool {
 	return false
 }
 
-func (s *Store) Close() error { return nil }
+func (s *LocalStore) Close() error { return nil }
 
 /* ------------------------------ persistence ------------------------------- */
 
-func (s *Store) persist(v *GameVersion, wasm []byte) error {
+func (s *LocalStore) persist(v *GameVersion, wasm []byte) error {
 	dir := filepath.Join(s.dir, v.GameID, v.Version)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -161,7 +174,7 @@ func (s *Store) persist(v *GameVersion, wasm []byte) error {
 	return os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o644)
 }
 
-func (s *Store) loadFromDisk() error {
+func (s *LocalStore) loadFromDisk() error {
 	gameDirs, err := os.ReadDir(s.dir)
 	if err != nil {
 		return err

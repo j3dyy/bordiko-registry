@@ -9,11 +9,16 @@
 // Config (env):
 //
 //	REGISTRY_ADDR                listen address           (default ":8082")
-//	REGISTRY_DATA_DIR            persist packages here    (default: in-memory)
+//	DATABASE_URL                 Postgres DSN; wasm stored in bytea (durable)
+//	REGISTRY_DATA_DIR            persist packages to disk (used when no DATABASE_URL)
 //	REGISTRY_REQUIRE_MODERATION  if "true", uploads land as "pending"
+//
+// Prefer DATABASE_URL in production: the filesystem store loses published games
+// on ephemeral redeploys, whereas Postgres bytea survives them.
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
@@ -21,17 +26,12 @@ import (
 )
 
 func main() {
-	dir := os.Getenv("REGISTRY_DATA_DIR")
-	store, err := NewStore(dir, time.Now)
+	ctx := context.Background()
+	store, err := openStore(ctx)
 	if err != nil {
 		log.Fatalf("registry store: %v", err)
 	}
 	defer store.Close()
-	if dir != "" {
-		log.Printf("registry persisting to %q (%d game(s) loaded)", dir, len(store.ListLatest()))
-	} else {
-		log.Printf("registry in-memory (set REGISTRY_DATA_DIR to persist)")
-	}
 
 	srv := NewServer(store, os.Getenv("REGISTRY_REQUIRE_MODERATION") == "true", time.Now)
 	addr := env("REGISTRY_ADDR", ":8082")
@@ -39,6 +39,31 @@ func main() {
 	if err := http.ListenAndServe(addr, srv.Routes()); err != nil {
 		log.Fatalf("registry failed: %v", err)
 	}
+}
+
+// openStore selects the durable Postgres store when DATABASE_URL is set,
+// otherwise the filesystem/in-memory LocalStore.
+func openStore(ctx context.Context) (Store, error) {
+	if url := os.Getenv("DATABASE_URL"); url != "" {
+		log.Printf("registry using Postgres store (wasm in bytea, durable)")
+		s, err := NewPostgresStore(ctx, url)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("registry connected to Postgres (%d game(s) in catalog)", len(s.ListLatest()))
+		return s, nil
+	}
+	dir := os.Getenv("REGISTRY_DATA_DIR")
+	s, err := NewLocalStore(dir, time.Now)
+	if err != nil {
+		return nil, err
+	}
+	if dir != "" {
+		log.Printf("registry persisting to %q (%d game(s) loaded) — set DATABASE_URL for durable storage", dir, len(s.ListLatest()))
+	} else {
+		log.Printf("registry in-memory (set DATABASE_URL or REGISTRY_DATA_DIR to persist)")
+	}
+	return s, nil
 }
 
 func env(key, fallback string) string {

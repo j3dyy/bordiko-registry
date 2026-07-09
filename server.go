@@ -9,12 +9,12 @@ import (
 )
 
 type Server struct {
-	store           *Store
+	store           Store
 	requireModerate bool
 	now             func() time.Time
 }
 
-func NewServer(store *Store, requireModerate bool, now func() time.Time) *Server {
+func NewServer(store Store, requireModerate bool, now func() time.Time) *Server {
 	return &Server{store: store, requireModerate: requireModerate, now: now}
 }
 
