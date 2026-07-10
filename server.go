@@ -29,6 +29,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /games/{id}/versions/{version}/wasm", s.versionWasm)
 	mux.HandleFunc("POST /games/{id}/versions/{version}/moderate", s.moderate)
 	mux.HandleFunc("POST /games/{id}/rate", s.rate)
+	mux.HandleFunc("GET /games/{id}/rating", s.userRating)
 	return mux
 }
 
@@ -115,6 +116,15 @@ func (s *Server) rate(w http.ResponseWriter, r *http.Request) {
 	}
 	agg := s.store.Ratings()[gameID]
 	writeJSON(w, http.StatusOK, map[string]any{"gameId": gameID, "rating": agg.Avg, "ratingCount": agg.Count})
+}
+
+// userRating returns a user's own stars for a game (via ?userId=) plus the
+// aggregate — lets the client pre-fill the rater with what the user already gave.
+func (s *Server) userRating(w http.ResponseWriter, r *http.Request) {
+	gameID := r.PathValue("id")
+	stars, _ := s.store.UserRating(gameID, r.URL.Query().Get("userId"))
+	agg := s.store.Ratings()[gameID]
+	writeJSON(w, http.StatusOK, map[string]any{"gameId": gameID, "stars": stars, "rating": agg.Avg, "ratingCount": agg.Count})
 }
 
 func (s *Server) gameDetail(w http.ResponseWriter, r *http.Request) {

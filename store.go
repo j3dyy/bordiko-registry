@@ -49,6 +49,9 @@ type Store interface {
 	// re-rating overwrites). Ratings returns the mean+count per game id.
 	RateGame(gameID, userID string, stars int) error
 	Ratings() map[string]RatingAgg
+	// UserRating returns a user's own stars for a game (0/false if unrated), so
+	// the client can pre-fill the rater with what they already gave.
+	UserRating(gameID, userID string) (int, bool)
 	Close() error
 }
 
@@ -200,6 +203,16 @@ func (s *LocalStore) Ratings() map[string]RatingAgg {
 		out[gid] = RatingAgg{Avg: float64(sum) / float64(len(byUser)), Count: len(byUser)}
 	}
 	return out
+}
+
+func (s *LocalStore) UserRating(gameID, userID string) (int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if byUser := s.ratings[gameID]; byUser != nil {
+		v, ok := byUser[userID]
+		return v, ok
+	}
+	return 0, false
 }
 
 func (s *LocalStore) Close() error { return nil }

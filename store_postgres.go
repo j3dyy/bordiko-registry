@@ -168,6 +168,16 @@ func (s *PostgresStore) Ratings() map[string]RatingAgg {
 	return out
 }
 
+func (s *PostgresStore) UserRating(gameID, userID string) (int, bool) {
+	var stars int
+	err := s.pool.QueryRow(s.ctx,
+		`SELECT stars FROM game_ratings WHERE game_id = $1 AND user_id = $2`, gameID, userID).Scan(&stars)
+	if err != nil {
+		return 0, false
+	}
+	return stars, true
+}
+
 func (s *PostgresStore) Close() error {
 	s.pool.Close()
 	return nil
