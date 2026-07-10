@@ -36,11 +36,16 @@ Store selection: `DATABASE_URL` (Postgres bytea) → else `REGISTRY_DATA_DIR`
 | Method & path | Purpose |
 | --- | --- |
 | `POST /publish` | `{manifest, wasm(base64)}` → validate + publish (or `422` with the reason) |
-| `GET /games` | Catalog: latest published version of each game |
+| `GET /games` | Catalog: latest published version of each game, each enriched with `rating` (mean stars) + `ratingCount` |
 | `GET /games/{id}` | All versions of a game |
 | `GET /games/{id}/wasm` | Latest published wasm (this is what the game-host fetches) |
 | `GET /games/{id}/versions/{v}/wasm` | A specific version's wasm |
+| `POST /games/{id}/rate` | `{userId, stars}` (stars 1–5) → record/overwrite a rating; returns the new `{rating, ratingCount}`. **Called only by the gateway**, which supplies a trusted `userId` from the session (the registry itself does no auth). |
 | `POST /games/{id}/versions/{v}/moderate` | `{action:"approve"\|"reject"}` |
+
+Ratings live in a `game_ratings` table (Postgres, `PRIMARY KEY (game_id, user_id)`
+so re-rating upserts; the in-memory `LocalStore` keeps them in a map). The table is
+auto-created on startup — no manual migration.
 
 ## Publish a game
 

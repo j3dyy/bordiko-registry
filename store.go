@@ -23,6 +23,16 @@ type GameVersion struct {
 	Status      string          `json:"status"` // published | pending | rejected
 	Manifest    json.RawMessage `json:"manifest"`
 	CreatedAt   time.Time       `json:"createdAt"`
+	// Transient rating aggregates — not persisted on the version row; the server
+	// fills these from the ratings store when it lists the catalog.
+	Rating      float64         `json:"rating"`
+	RatingCount int             `json:"ratingCount"`
+}
+
+// RatingAgg is a game's aggregated player rating (mean stars + how many raters).
+type RatingAgg struct {
+	Avg   float64 `json:"avg"`
+	Count int     `json:"count"`
 }
 
 // Store persists published game versions and their wasm blobs. Two
@@ -35,6 +45,10 @@ type Store interface {
 	Versions(gameID string) []GameVersion
 	LoadWasm(gameID, version string) ([]byte, *GameVersion, bool)
 	SetStatus(gameID, version, status string) bool
+	// RateGame records one user's 1–5 star rating for a game (one per user;
+	// re-rating overwrites). Ratings returns the mean+count per game id.
+	RateGame(gameID, userID string, stars int) error
+	Ratings() map[string]RatingAgg
 	Close() error
 }
 
@@ -42,17 +56,18 @@ type Store interface {
 // persists each publish to disk (and reloads on startup) so the catalog
 // survives restarts. The wasm blobs live beside the metadata.
 type LocalStore struct {
-	mu    sync.RWMutex
-	games map[string][]*GameVersion // gameID -> versions in publish order
-	blobs map[string][]byte         // "gameID@version" -> wasm
-	dir   string
-	now   func() time.Time
+	mu      sync.RWMutex
+	games   map[string][]*GameVersion    // gameID -> versions in publish order
+	blobs   map[string][]byte            // "gameID@version" -> wasm
+	ratings map[string]map[string]int    // gameID -> userID -> stars (1..5)
+	dir     string
+	now     func() time.Time
 }
 
 func blobKey(gameID, version string) string { return gameID + "@" + version }
 
 func NewLocalStore(dir string, now func() time.Time) (*LocalStore, error) {
-	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, dir: dir, now: now}
+	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, ratings: map[string]map[string]int{}, dir: dir, now: now}
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -156,6 +171,35 @@ func (s *LocalStore) SetStatus(gameID, version, status string) bool {
 		}
 	}
 	return false
+}
+
+// RateGame records/overwrites a user's star rating (in memory; the durable
+// PostgresStore is used in production).
+func (s *LocalStore) RateGame(gameID, userID string, stars int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ratings[gameID] == nil {
+		s.ratings[gameID] = map[string]int{}
+	}
+	s.ratings[gameID][userID] = stars
+	return nil
+}
+
+func (s *LocalStore) Ratings() map[string]RatingAgg {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := map[string]RatingAgg{}
+	for gid, byUser := range s.ratings {
+		if len(byUser) == 0 {
+			continue
+		}
+		sum := 0
+		for _, st := range byUser {
+			sum += st
+		}
+		out[gid] = RatingAgg{Avg: float64(sum) / float64(len(byUser)), Count: len(byUser)}
+	}
+	return out
 }
 
 func (s *LocalStore) Close() error { return nil }

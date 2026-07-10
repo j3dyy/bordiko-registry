@@ -28,6 +28,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /games/{id}/wasm", s.latestWasm)
 	mux.HandleFunc("GET /games/{id}/versions/{version}/wasm", s.versionWasm)
 	mux.HandleFunc("POST /games/{id}/versions/{version}/moderate", s.moderate)
+	mux.HandleFunc("POST /games/{id}/rate", s.rate)
 	return mux
 }
 
@@ -85,7 +86,35 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listGames(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]any{"games": s.store.ListLatest()})
+	games := s.store.ListLatest()
+	ratings := s.store.Ratings()
+	for i := range games {
+		if agg, ok := ratings[games[i].GameID]; ok {
+			games[i].Rating = agg.Avg
+			games[i].RatingCount = agg.Count
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"games": games})
+}
+
+// rate records a user's star rating for a game. The gateway (which knows the
+// authenticated user) is the only intended caller — it injects a trusted userId.
+func (s *Server) rate(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		UserID string `json:"userId"`
+		Stars  int    `json:"stars"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.UserID == "" || body.Stars < 1 || body.Stars > 5 {
+		writeErr(w, http.StatusBadRequest, "bad_request", "userId and stars (1-5) required")
+		return
+	}
+	gameID := r.PathValue("id")
+	if err := s.store.RateGame(gameID, body.UserID, body.Stars); err != nil {
+		writeErr(w, http.StatusInternalServerError, "rate_failed", err.Error())
+		return
+	}
+	agg := s.store.Ratings()[gameID]
+	writeJSON(w, http.StatusOK, map[string]any{"gameId": gameID, "rating": agg.Avg, "ratingCount": agg.Count})
 }
 
 func (s *Server) gameDetail(w http.ResponseWriter, r *http.Request) {

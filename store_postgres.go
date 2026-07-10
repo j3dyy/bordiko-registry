@@ -34,6 +34,13 @@ CREATE TABLE IF NOT EXISTS game_versions (
     wasm         bytea NOT NULL,
     created_at   timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (game_id, version)
+);
+CREATE TABLE IF NOT EXISTS game_ratings (
+    game_id    text NOT NULL,
+    user_id    text NOT NULL,
+    stars      int  NOT NULL CHECK (stars BETWEEN 1 AND 5),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (game_id, user_id)
 );`
 
 func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
@@ -130,6 +137,35 @@ func (s *PostgresStore) SetStatus(gameID, version, status string) bool {
 		`UPDATE game_versions SET status = $3 WHERE game_id = $1 AND version = $2`,
 		gameID, version, status)
 	return err == nil && ct.RowsAffected() > 0
+}
+
+func (s *PostgresStore) RateGame(gameID, userID string, stars int) error {
+	_, err := s.pool.Exec(s.ctx,
+		`INSERT INTO game_ratings (game_id, user_id, stars) VALUES ($1,$2,$3)
+		 ON CONFLICT (game_id, user_id) DO UPDATE SET stars = EXCLUDED.stars, created_at = now()`,
+		gameID, userID, stars)
+	return err
+}
+
+func (s *PostgresStore) Ratings() map[string]RatingAgg {
+	out := map[string]RatingAgg{}
+	rows, err := s.pool.Query(s.ctx,
+		`SELECT game_id, avg(stars)::float8, count(*) FROM game_ratings GROUP BY game_id`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			gid string
+			avg float64
+			cnt int
+		)
+		if err := rows.Scan(&gid, &avg, &cnt); err == nil {
+			out[gid] = RatingAgg{Avg: avg, Count: cnt}
+		}
+	}
+	return out
 }
 
 func (s *PostgresStore) Close() error {
