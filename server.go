@@ -27,6 +27,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /games/{id}", s.gameDetail)
 	mux.HandleFunc("GET /games/{id}/wasm", s.latestWasm)
 	mux.HandleFunc("GET /games/{id}/assets/{assetId}", s.asset)
+	mux.HandleFunc("GET /games/{id}/ui", s.ui)
 	mux.HandleFunc("GET /games/{id}/versions/{version}/wasm", s.versionWasm)
 	mux.HandleFunc("POST /games/{id}/versions/{version}/moderate", s.moderate)
 	mux.HandleFunc("POST /games/{id}/rate", s.rate)
@@ -42,6 +43,7 @@ type publishRequest struct {
 	Manifest json.RawMessage   `json:"manifest"`
 	Wasm     string            `json:"wasm"`             // base64-encoded game.wasm
 	Assets   map[string]string `json:"assets,omitempty"` // assetId -> base64 image (Option 1c)
+	UI       string            `json:"ui,omitempty"`     // self-contained sandboxed UI bundle html (Option 2)
 }
 
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
@@ -69,6 +71,12 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnprocessableEntity, "bad_assets", err.Error())
 		return
 	}
+	// Gate 5 (Option 2): the optional sandboxed UI bundle (size-guarded).
+	ui, err := validateUI(req.UI)
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, "bad_ui", err.Error())
+		return
+	}
 
 	status := "published"
 	if s.requireModerate {
@@ -94,7 +102,10 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.PutAssets(v.GameID, v.Version, assets); err != nil {
 		log.Printf("store assets for %s@%s: %v", v.GameID, v.Version, err)
 	}
-	log.Printf("published %s@%s (%s, %d bytes, %d assets)", v.GameID, v.Version, v.Status, v.WasmBytes, len(assets))
+	if err := s.store.PutUI(v.GameID, v.Version, ui); err != nil {
+		log.Printf("store ui for %s@%s: %v", v.GameID, v.Version, err)
+	}
+	log.Printf("published %s@%s (%s, %d bytes, %d assets, ui=%v)", v.GameID, v.Version, v.Status, v.WasmBytes, len(assets), len(ui) > 0)
 	writeJSON(w, http.StatusCreated, v)
 }
 
@@ -168,6 +179,18 @@ func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", http.DetectContentType(blob))
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(blob)
+}
+
+// ui serves a game's self-contained sandboxed UI bundle (Option 2). The gateway
+// wraps this with the sandbox CSP before it reaches the browser iframe.
+func (s *Server) ui(w http.ResponseWriter, r *http.Request) {
+	html, ok := s.store.LoadUI(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not_found", "no ui bundle for this game")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(html)
 }
 
 func (s *Server) serveWasm(w http.ResponseWriter, gameID, version string) {

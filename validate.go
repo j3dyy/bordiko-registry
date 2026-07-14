@@ -31,6 +31,21 @@ var (
 	allowedAssetTypes = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
 )
 
+const maxUIBytes = 512 << 10 // 512 KiB
+
+// validateUI vets the self-contained sandboxed UI bundle (Option 2). It is
+// untrusted, but runs only inside the locked-down iframe (opaque origin, no
+// network via the gateway's CSP), so this is just a size/sanity guard.
+func validateUI(html string) ([]byte, error) {
+	if html == "" {
+		return nil, nil
+	}
+	if len(html) > maxUIBytes {
+		return nil, fmt.Errorf("ui bundle is %d bytes (max %d)", len(html), maxUIBytes)
+	}
+	return []byte(html), nil
+}
+
 // validateAssets decodes and vets the uploaded images: base64, a safe id, a size
 // cap, and a real raster type (SVG and anything script-bearing is rejected — the
 // content type is sniffed from the bytes, not trusted from the client).

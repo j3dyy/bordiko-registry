@@ -50,6 +50,10 @@ type Store interface {
 	PutAssets(gameID, version string, assets map[string][]byte) error
 	// LoadAsset returns an asset from a game's LATEST published version.
 	LoadAsset(gameID, assetID string) ([]byte, bool)
+	// PutUI stores a version's self-contained sandboxed UI bundle (Option 2).
+	PutUI(gameID, version string, html []byte) error
+	// LoadUI returns a game's UI bundle from its LATEST published version.
+	LoadUI(gameID string) ([]byte, bool)
 	// RateGame records one user's 1–5 star rating for a game (one per user;
 	// re-rating overwrites). Ratings returns the mean+count per game id.
 	RateGame(gameID, userID string, stars int) error
@@ -68,6 +72,7 @@ type LocalStore struct {
 	games   map[string][]*GameVersion       // gameID -> versions in publish order
 	blobs   map[string][]byte               // "gameID@version" -> wasm
 	assets  map[string]map[string][]byte    // "gameID@version" -> assetId -> bytes
+	ui      map[string][]byte               // "gameID@version" -> sandboxed UI bundle html
 	ratings map[string]map[string]int       // gameID -> userID -> stars (1..5)
 	dir     string
 	now     func() time.Time
@@ -76,7 +81,7 @@ type LocalStore struct {
 func blobKey(gameID, version string) string { return gameID + "@" + version }
 
 func NewLocalStore(dir string, now func() time.Time) (*LocalStore, error) {
-	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, assets: map[string]map[string][]byte{}, ratings: map[string]map[string]int{}, dir: dir, now: now}
+	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, assets: map[string]map[string][]byte{}, ui: map[string][]byte{}, ratings: map[string]map[string]int{}, dir: dir, now: now}
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -266,6 +271,39 @@ func (s *LocalStore) LoadAsset(gameID, assetID string) ([]byte, bool) {
 	return nil, false
 }
 
+func (s *LocalStore) PutUI(gameID, version string, html []byte) error {
+	if len(html) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ui[blobKey(gameID, version)] = html
+	if s.dir != "" {
+		dir := filepath.Join(s.dir, gameID, version)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(dir, "ui.html"), html, 0o644)
+	}
+	return nil
+}
+
+func (s *LocalStore) LoadUI(gameID string) ([]byte, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest *GameVersion
+	for _, v := range s.games[gameID] {
+		if v.Status == "published" && (latest == nil || v.CreatedAt.After(latest.CreatedAt)) {
+			latest = v
+		}
+	}
+	if latest == nil {
+		return nil, false
+	}
+	b, ok := s.ui[blobKey(gameID, latest.Version)]
+	return b, ok
+}
+
 func (s *LocalStore) Close() error { return nil }
 
 /* ------------------------------ persistence ------------------------------- */
@@ -328,6 +366,10 @@ func (s *LocalStore) loadFromDisk() error {
 				if len(m) > 0 {
 					s.assets[blobKey(v.GameID, v.Version)] = m
 				}
+			}
+			// Optional sandboxed UI bundle.
+			if html, err := os.ReadFile(filepath.Join(base, "ui.html")); err == nil {
+				s.ui[blobKey(v.GameID, v.Version)] = html
 			}
 		}
 	}

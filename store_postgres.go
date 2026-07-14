@@ -48,6 +48,12 @@ CREATE TABLE IF NOT EXISTS game_assets (
     asset_id text  NOT NULL,
     bytes    bytea NOT NULL,
     PRIMARY KEY (game_id, version, asset_id)
+);
+CREATE TABLE IF NOT EXISTS game_ui (
+    game_id text  NOT NULL,
+    version text  NOT NULL,
+    html    bytea NOT NULL,
+    PRIMARY KEY (game_id, version)
 );`
 
 func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
@@ -204,6 +210,30 @@ func (s *PostgresStore) LoadAsset(gameID, assetID string) ([]byte, bool) {
 		   JOIN game_versions v ON v.game_id = a.game_id AND v.version = a.version
 		 WHERE a.game_id = $1 AND a.asset_id = $2 AND v.status = 'published'
 		 ORDER BY v.created_at DESC LIMIT 1`, gameID, assetID).Scan(&b)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
+func (s *PostgresStore) PutUI(gameID, version string, html []byte) error {
+	if len(html) == 0 {
+		return nil
+	}
+	_, err := s.pool.Exec(s.ctx,
+		`INSERT INTO game_ui (game_id, version, html) VALUES ($1,$2,$3)
+		 ON CONFLICT (game_id, version) DO UPDATE SET html = EXCLUDED.html`,
+		gameID, version, html)
+	return err
+}
+
+func (s *PostgresStore) LoadUI(gameID string) ([]byte, bool) {
+	var b []byte
+	err := s.pool.QueryRow(s.ctx,
+		`SELECT u.html FROM game_ui u
+		   JOIN game_versions v ON v.game_id = u.game_id AND v.version = u.version
+		 WHERE u.game_id = $1 AND v.status = 'published'
+		 ORDER BY v.created_at DESC LIMIT 1`, gameID).Scan(&b)
 	if err != nil {
 		return nil, false
 	}
