@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"testing"
@@ -60,5 +61,32 @@ func TestValidateRejectsBadManifest(t *testing.T) {
 	bad := manifestFor("Bad Name", "tableau", 2, 4)
 	if _, _, err := validatePackage(context.Background(), bad, wasm); err == nil {
 		t.Fatal("expected manifest rejection")
+	}
+}
+
+func TestValidateAssets(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString
+	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...) // valid PNG signature
+
+	out, err := validateAssets(map[string]string{"role-good.png": b64(png)})
+	if err != nil || len(out) != 1 {
+		t.Fatalf("a valid PNG should be accepted: %v", err)
+	}
+	// SVG / anything script-bearing is rejected (type sniffed from bytes).
+	if _, err := validateAssets(map[string]string{"x.png": b64([]byte(`<?xml version="1.0"?><svg onload="alert(1)"/>`))}); err == nil {
+		t.Fatal("an SVG/text asset must be rejected")
+	}
+	// path-traversal ids rejected.
+	if _, err := validateAssets(map[string]string{"../secret": b64(png)}); err == nil {
+		t.Fatal("a path-y asset id must be rejected")
+	}
+	// oversized rejected.
+	big := b64(append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, maxAssetBytes+1)...))
+	if _, err := validateAssets(map[string]string{"big.png": big}); err == nil {
+		t.Fatal("an oversized asset must be rejected")
+	}
+	// nil is fine (no assets).
+	if out, err := validateAssets(nil); err != nil || out != nil {
+		t.Fatalf("no assets should be a no-op: %v", err)
 	}
 }

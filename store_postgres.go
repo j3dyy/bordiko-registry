@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS game_ratings (
     stars      int  NOT NULL CHECK (stars BETWEEN 1 AND 5),
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (game_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS game_assets (
+    game_id  text  NOT NULL,
+    version  text  NOT NULL,
+    asset_id text  NOT NULL,
+    bytes    bytea NOT NULL,
+    PRIMARY KEY (game_id, version, asset_id)
 );`
 
 func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
@@ -176,6 +183,31 @@ func (s *PostgresStore) UserRating(gameID, userID string) (int, bool) {
 		return 0, false
 	}
 	return stars, true
+}
+
+func (s *PostgresStore) PutAssets(gameID, version string, assets map[string][]byte) error {
+	for id, b := range assets {
+		if _, err := s.pool.Exec(s.ctx,
+			`INSERT INTO game_assets (game_id, version, asset_id, bytes) VALUES ($1,$2,$3,$4)
+			 ON CONFLICT (game_id, version, asset_id) DO UPDATE SET bytes = EXCLUDED.bytes`,
+			gameID, version, id, b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *PostgresStore) LoadAsset(gameID, assetID string) ([]byte, bool) {
+	var b []byte
+	err := s.pool.QueryRow(s.ctx,
+		`SELECT a.bytes FROM game_assets a
+		   JOIN game_versions v ON v.game_id = a.game_id AND v.version = a.version
+		 WHERE a.game_id = $1 AND a.asset_id = $2 AND v.status = 'published'
+		 ORDER BY v.created_at DESC LIMIT 1`, gameID, assetID).Scan(&b)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
 }
 
 func (s *PostgresStore) Close() error {

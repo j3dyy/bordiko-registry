@@ -45,6 +45,11 @@ type Store interface {
 	Versions(gameID string) []GameVersion
 	LoadWasm(gameID, version string) ([]byte, *GameVersion, bool)
 	SetStatus(gameID, version, status string) bool
+	// PutAssets stores a version's image assets (assetId -> raw bytes) — the
+	// developer's own art for the declarative board (Option 1c).
+	PutAssets(gameID, version string, assets map[string][]byte) error
+	// LoadAsset returns an asset from a game's LATEST published version.
+	LoadAsset(gameID, assetID string) ([]byte, bool)
 	// RateGame records one user's 1–5 star rating for a game (one per user;
 	// re-rating overwrites). Ratings returns the mean+count per game id.
 	RateGame(gameID, userID string, stars int) error
@@ -60,9 +65,10 @@ type Store interface {
 // survives restarts. The wasm blobs live beside the metadata.
 type LocalStore struct {
 	mu      sync.RWMutex
-	games   map[string][]*GameVersion    // gameID -> versions in publish order
-	blobs   map[string][]byte            // "gameID@version" -> wasm
-	ratings map[string]map[string]int    // gameID -> userID -> stars (1..5)
+	games   map[string][]*GameVersion       // gameID -> versions in publish order
+	blobs   map[string][]byte               // "gameID@version" -> wasm
+	assets  map[string]map[string][]byte    // "gameID@version" -> assetId -> bytes
+	ratings map[string]map[string]int       // gameID -> userID -> stars (1..5)
 	dir     string
 	now     func() time.Time
 }
@@ -70,7 +76,7 @@ type LocalStore struct {
 func blobKey(gameID, version string) string { return gameID + "@" + version }
 
 func NewLocalStore(dir string, now func() time.Time) (*LocalStore, error) {
-	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, ratings: map[string]map[string]int{}, dir: dir, now: now}
+	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, assets: map[string]map[string][]byte{}, ratings: map[string]map[string]int{}, dir: dir, now: now}
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -215,6 +221,51 @@ func (s *LocalStore) UserRating(gameID, userID string) (int, bool) {
 	return 0, false
 }
 
+func (s *LocalStore) PutAssets(gameID, version string, assets map[string][]byte) error {
+	if len(assets) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := blobKey(gameID, version)
+	cp := make(map[string][]byte, len(assets))
+	for id, b := range assets {
+		cp[id] = b
+	}
+	s.assets[key] = cp
+	if s.dir != "" {
+		dir := filepath.Join(s.dir, gameID, version, "assets")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		for id, b := range cp {
+			if err := os.WriteFile(filepath.Join(dir, id), b, 0o644); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *LocalStore) LoadAsset(gameID, assetID string) ([]byte, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var latest *GameVersion
+	for _, v := range s.games[gameID] {
+		if v.Status == "published" && (latest == nil || v.CreatedAt.After(latest.CreatedAt)) {
+			latest = v
+		}
+	}
+	if latest == nil {
+		return nil, false
+	}
+	if a := s.assets[blobKey(gameID, latest.Version)]; a != nil {
+		b, ok := a[assetID]
+		return b, ok
+	}
+	return nil, false
+}
+
 func (s *LocalStore) Close() error { return nil }
 
 /* ------------------------------ persistence ------------------------------- */
@@ -263,6 +314,21 @@ func (s *LocalStore) loadFromDisk() error {
 			}
 			s.games[v.GameID] = append(s.games[v.GameID], &v)
 			s.blobs[blobKey(v.GameID, v.Version)] = wasm
+			// Optional per-version image assets.
+			if entries, err := os.ReadDir(filepath.Join(base, "assets")); err == nil {
+				m := map[string][]byte{}
+				for _, e := range entries {
+					if e.IsDir() {
+						continue
+					}
+					if b, err := os.ReadFile(filepath.Join(base, "assets", e.Name())); err == nil {
+						m[e.Name()] = b
+					}
+				}
+				if len(m) > 0 {
+					s.assets[blobKey(v.GameID, v.Version)] = m
+				}
+			}
 		}
 	}
 	return nil

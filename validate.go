@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"time"
 
@@ -15,6 +17,55 @@ import (
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
 )
+
+// Asset limits (Option 1c). Assets are the developer's own images for the
+// declarative board — kept small, raster-only, and path-safe.
+const (
+	maxAssetBytes = 256 << 10 // 256 KiB each
+	maxAssetTotal = 4 << 20   // 4 MiB total
+	maxAssetCount = 32
+)
+
+var (
+	assetIDRe         = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	allowedAssetTypes = map[string]bool{"image/png": true, "image/jpeg": true, "image/gif": true, "image/webp": true}
+)
+
+// validateAssets decodes and vets the uploaded images: base64, a safe id, a size
+// cap, and a real raster type (SVG and anything script-bearing is rejected — the
+// content type is sniffed from the bytes, not trusted from the client).
+func validateAssets(raw map[string]string) (map[string][]byte, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if len(raw) > maxAssetCount {
+		return nil, fmt.Errorf("too many assets: %d (max %d)", len(raw), maxAssetCount)
+	}
+	out := make(map[string][]byte, len(raw))
+	total := 0
+	for id, b64 := range raw {
+		if !assetIDRe.MatchString(id) {
+			return nil, fmt.Errorf("invalid asset id %q (lowercase, no path separators)", id)
+		}
+		data, err := base64.StdEncoding.DecodeString(b64)
+		if err != nil {
+			return nil, fmt.Errorf("asset %q is not valid base64", id)
+		}
+		if len(data) == 0 || len(data) > maxAssetBytes {
+			return nil, fmt.Errorf("asset %q is %d bytes (max %d)", id, len(data), maxAssetBytes)
+		}
+		ct := http.DetectContentType(data)
+		if !allowedAssetTypes[ct] {
+			return nil, fmt.Errorf("asset %q is %s — only PNG/JPEG/GIF/WebP images are allowed", id, ct)
+		}
+		total += len(data)
+		if total > maxAssetTotal {
+			return nil, fmt.Errorf("assets exceed the %d-byte total cap", maxAssetTotal)
+		}
+		out[id] = data
+	}
+	return out, nil
+}
 
 // Uploading arbitrary code is the whole point of an open marketplace, so the
 // registry never trusts a package. Three gates run before anything is published:

@@ -26,6 +26,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /games", s.listGames)
 	mux.HandleFunc("GET /games/{id}", s.gameDetail)
 	mux.HandleFunc("GET /games/{id}/wasm", s.latestWasm)
+	mux.HandleFunc("GET /games/{id}/assets/{assetId}", s.asset)
 	mux.HandleFunc("GET /games/{id}/versions/{version}/wasm", s.versionWasm)
 	mux.HandleFunc("POST /games/{id}/versions/{version}/moderate", s.moderate)
 	mux.HandleFunc("POST /games/{id}/rate", s.rate)
@@ -38,8 +39,9 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 type publishRequest struct {
-	Manifest json.RawMessage `json:"manifest"`
-	Wasm     string          `json:"wasm"` // base64-encoded game.wasm
+	Manifest json.RawMessage   `json:"manifest"`
+	Wasm     string            `json:"wasm"`             // base64-encoded game.wasm
+	Assets   map[string]string `json:"assets,omitempty"` // assetId -> base64 image (Option 1c)
 }
 
 func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +60,13 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Validation failure is the applicant's problem, not a server error.
 		writeErr(w, http.StatusUnprocessableEntity, "validation_failed", err.Error())
+		return
+	}
+
+	// Gate 4 (Option 1c): the developer's image assets must be real, small rasters.
+	assets, err := validateAssets(req.Assets)
+	if err != nil {
+		writeErr(w, http.StatusUnprocessableEntity, "bad_assets", err.Error())
 		return
 	}
 
@@ -82,7 +91,10 @@ func (s *Server) publish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "publish_failed", err.Error())
 		return
 	}
-	log.Printf("published %s@%s (%s, %d bytes)", v.GameID, v.Version, v.Status, v.WasmBytes)
+	if err := s.store.PutAssets(v.GameID, v.Version, assets); err != nil {
+		log.Printf("store assets for %s@%s: %v", v.GameID, v.Version, err)
+	}
+	log.Printf("published %s@%s (%s, %d bytes, %d assets)", v.GameID, v.Version, v.Status, v.WasmBytes, len(assets))
 	writeJSON(w, http.StatusCreated, v)
 }
 
@@ -142,6 +154,20 @@ func (s *Server) latestWasm(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) versionWasm(w http.ResponseWriter, r *http.Request) {
 	s.serveWasm(w, r.PathValue("id"), r.PathValue("version"))
+}
+
+// asset serves a game's uploaded image (Option 1c) from its latest published
+// version. The content type is sniffed from the bytes; assets are immutable per
+// version, so they cache hard.
+func (s *Server) asset(w http.ResponseWriter, r *http.Request) {
+	blob, ok := s.store.LoadAsset(r.PathValue("id"), r.PathValue("assetId"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "not_found", "no such asset")
+		return
+	}
+	w.Header().Set("Content-Type", http.DetectContentType(blob))
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(blob)
 }
 
 func (s *Server) serveWasm(w http.ResponseWriter, gameID, version string) {
