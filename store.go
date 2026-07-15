@@ -25,8 +25,8 @@ type GameVersion struct {
 	CreatedAt   time.Time       `json:"createdAt"`
 	// Transient rating aggregates — not persisted on the version row; the server
 	// fills these from the ratings store when it lists the catalog.
-	Rating      float64         `json:"rating"`
-	RatingCount int             `json:"ratingCount"`
+	Rating      float64 `json:"rating"`
+	RatingCount int     `json:"ratingCount"`
 }
 
 // RatingAgg is a game's aggregated player rating (mean stars + how many raters).
@@ -69,11 +69,11 @@ type Store interface {
 // survives restarts. The wasm blobs live beside the metadata.
 type LocalStore struct {
 	mu      sync.RWMutex
-	games   map[string][]*GameVersion       // gameID -> versions in publish order
-	blobs   map[string][]byte               // "gameID@version" -> wasm
-	assets  map[string]map[string][]byte    // "gameID@version" -> assetId -> bytes
-	ui      map[string][]byte               // "gameID@version" -> sandboxed UI bundle html
-	ratings map[string]map[string]int       // gameID -> userID -> stars (1..5)
+	games   map[string][]*GameVersion    // gameID -> versions in publish order
+	blobs   map[string][]byte            // "gameID@version" -> wasm
+	assets  map[string]map[string][]byte // "gameID@version" -> assetId -> bytes
+	ui      map[string][]byte            // "gameID@version" -> sandboxed UI bundle html
+	ratings map[string]map[string]int    // gameID -> userID -> stars (1..5)
 	dir     string
 	now     func() time.Time
 }

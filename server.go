@@ -26,6 +26,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /games", s.listGames)
 	mux.HandleFunc("GET /games/{id}", s.gameDetail)
 	mux.HandleFunc("GET /games/{id}/wasm", s.latestWasm)
+	mux.HandleFunc("GET /games/{id}/version", s.latestVersion)
 	mux.HandleFunc("GET /games/{id}/assets/{assetId}", s.asset)
 	mux.HandleFunc("GET /games/{id}/ui", s.ui)
 	mux.HandleFunc("GET /games/{id}/versions/{version}/wasm", s.versionWasm)
@@ -161,6 +162,21 @@ func (s *Server) gameDetail(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) latestWasm(w http.ResponseWriter, r *http.Request) {
 	s.serveWasm(w, r.PathValue("id"), "")
+}
+
+// latestVersion reports which build of a game is published right now, without
+// shipping the wasm. The game-host asks this when a match is created so it can
+// pin that version onto the match (and notice that an update has landed) at the
+// cost of a few bytes rather than a megabyte.
+func (s *Server) latestVersion(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	for _, v := range s.store.ListLatest() {
+		if v.GameID == id {
+			writeJSON(w, http.StatusOK, map[string]any{"gameId": id, "version": v.Version, "sha": v.WasmSHA})
+			return
+		}
+	}
+	writeErr(w, http.StatusNotFound, "not_found", "no such published game")
 }
 
 func (s *Server) versionWasm(w http.ResponseWriter, r *http.Request) {
