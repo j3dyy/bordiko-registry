@@ -31,6 +31,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /games/{id}/ui", s.ui)
 	mux.HandleFunc("GET /games/{id}/versions/{version}/wasm", s.versionWasm)
 	mux.HandleFunc("POST /games/{id}/versions/{version}/moderate", s.moderate)
+	mux.HandleFunc("POST /games/{id}/enabled", s.setEnabled)
 	mux.HandleFunc("POST /games/{id}/rate", s.rate)
 	mux.HandleFunc("GET /games/{id}/rating", s.userRating)
 	return mux
@@ -241,6 +242,24 @@ func (s *Server) moderate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"gameId": r.PathValue("id"), "version": r.PathValue("version"), "status": status})
+}
+
+// setEnabled enables/disables a whole game (admin action, funnelled from the
+// gateway which enforces auth). A disabled game stays published but drops out of
+// the catalog and can't start new matches.
+func (s *Server) setEnabled(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+		return
+	}
+	if err := s.store.SetGameEnabled(r.PathValue("id"), body.Enabled); err != nil {
+		writeErr(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"gameId": r.PathValue("id"), "enabled": body.Enabled})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

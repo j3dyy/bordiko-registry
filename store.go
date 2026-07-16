@@ -27,6 +27,10 @@ type GameVersion struct {
 	// fills these from the ratings store when it lists the catalog.
 	Rating      float64 `json:"rating"`
 	RatingCount int     `json:"ratingCount"`
+	// Enabled is a per-GAME admin flag (not per-version): a disabled game stays
+	// published but is hidden from the catalog and can't start new matches. Filled
+	// by ListLatest; defaults to true (enabled) for any game with no flag row.
+	Enabled bool `json:"enabled"`
 }
 
 // RatingAgg is a game's aggregated player rating (mean stars + how many raters).
@@ -45,6 +49,9 @@ type Store interface {
 	Versions(gameID string) []GameVersion
 	LoadWasm(gameID, version string) ([]byte, *GameVersion, bool)
 	SetStatus(gameID, version, status string) bool
+	// SetGameEnabled enables/disables a whole game (admin action). A disabled game
+	// is still published but hidden from ListLatest's Enabled flag.
+	SetGameEnabled(gameID string, enabled bool) error
 	// PutAssets stores a version's image assets (assetId -> raw bytes) — the
 	// developer's own art for the declarative board (Option 1c).
 	PutAssets(gameID, version string, assets map[string][]byte) error
@@ -68,20 +75,21 @@ type Store interface {
 // persists each publish to disk (and reloads on startup) so the catalog
 // survives restarts. The wasm blobs live beside the metadata.
 type LocalStore struct {
-	mu      sync.RWMutex
-	games   map[string][]*GameVersion    // gameID -> versions in publish order
-	blobs   map[string][]byte            // "gameID@version" -> wasm
-	assets  map[string]map[string][]byte // "gameID@version" -> assetId -> bytes
-	ui      map[string][]byte            // "gameID@version" -> sandboxed UI bundle html
-	ratings map[string]map[string]int    // gameID -> userID -> stars (1..5)
-	dir     string
-	now     func() time.Time
+	mu       sync.RWMutex
+	games    map[string][]*GameVersion    // gameID -> versions in publish order
+	blobs    map[string][]byte            // "gameID@version" -> wasm
+	assets   map[string]map[string][]byte // "gameID@version" -> assetId -> bytes
+	ui       map[string][]byte            // "gameID@version" -> sandboxed UI bundle html
+	ratings  map[string]map[string]int    // gameID -> userID -> stars (1..5)
+	disabled map[string]bool              // gameID -> true when an admin disabled it
+	dir      string
+	now      func() time.Time
 }
 
 func blobKey(gameID, version string) string { return gameID + "@" + version }
 
 func NewLocalStore(dir string, now func() time.Time) (*LocalStore, error) {
-	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, assets: map[string]map[string][]byte{}, ui: map[string][]byte{}, ratings: map[string]map[string]int{}, dir: dir, now: now}
+	s := &LocalStore{games: map[string][]*GameVersion{}, blobs: map[string][]byte{}, assets: map[string]map[string][]byte{}, ui: map[string][]byte{}, ratings: map[string]map[string]int{}, disabled: map[string]bool{}, dir: dir, now: now}
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err
@@ -123,7 +131,9 @@ func (s *LocalStore) ListLatest() []GameVersion {
 			}
 		}
 		if latest != nil {
-			out = append(out, *latest)
+			cp := *latest
+			cp.Enabled = !s.disabled[cp.GameID]
+			out = append(out, cp)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].GameID < out[j].GameID })
@@ -185,6 +195,19 @@ func (s *LocalStore) SetStatus(gameID, version, status string) bool {
 		}
 	}
 	return false
+}
+
+// SetGameEnabled toggles a whole game's availability (admin action). Kept in
+// memory here; the durable PostgresStore is used in production.
+func (s *LocalStore) SetGameEnabled(gameID string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if enabled {
+		delete(s.disabled, gameID)
+	} else {
+		s.disabled[gameID] = true
+	}
+	return nil
 }
 
 // RateGame records/overwrites a user's star rating (in memory; the durable

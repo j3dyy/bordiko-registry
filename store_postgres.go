@@ -54,6 +54,10 @@ CREATE TABLE IF NOT EXISTS game_ui (
     version text  NOT NULL,
     html    bytea NOT NULL,
     PRIMARY KEY (game_id, version)
+);
+CREATE TABLE IF NOT EXISTS game_flags (
+    game_id text PRIMARY KEY,
+    enabled boolean NOT NULL DEFAULT true
 );`
 
 func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
@@ -89,17 +93,33 @@ func (s *PostgresStore) Publish(v *GameVersion, wasm []byte) error {
 
 func (s *PostgresStore) ListLatest() []GameVersion {
 	rows, err := s.pool.Query(s.ctx,
-		`SELECT DISTINCT ON (game_id)
-		    game_id, version, display_name, board, min_players, max_players,
-		    wasm_sha, wasm_bytes, status, manifest, created_at
-		 FROM game_versions
-		 WHERE status = 'published'
-		 ORDER BY game_id, created_at DESC`)
+		`SELECT DISTINCT ON (gv.game_id)
+		    gv.game_id, gv.version, gv.display_name, gv.board, gv.min_players, gv.max_players,
+		    gv.wasm_sha, gv.wasm_bytes, gv.status, gv.manifest, gv.created_at,
+		    COALESCE(f.enabled, true) AS enabled
+		 FROM game_versions gv
+		 LEFT JOIN game_flags f ON f.game_id = gv.game_id
+		 WHERE gv.status = 'published'
+		 ORDER BY gv.game_id, gv.created_at DESC`)
 	if err != nil {
 		return []GameVersion{}
 	}
 	defer rows.Close()
-	return scanVersions(rows)
+	out := []GameVersion{}
+	for rows.Next() {
+		var (
+			v        GameVersion
+			manifest []byte
+		)
+		if err := rows.Scan(
+			&v.GameID, &v.Version, &v.DisplayName, &v.Board, &v.MinPlayers, &v.MaxPlayers,
+			&v.WasmSHA, &v.WasmBytes, &v.Status, &manifest, &v.CreatedAt, &v.Enabled); err != nil {
+			continue
+		}
+		v.Manifest = manifest
+		out = append(out, v)
+	}
+	return out
 }
 
 func (s *PostgresStore) Versions(gameID string) []GameVersion {
@@ -150,6 +170,13 @@ func (s *PostgresStore) SetStatus(gameID, version, status string) bool {
 		`UPDATE game_versions SET status = $3 WHERE game_id = $1 AND version = $2`,
 		gameID, version, status)
 	return err == nil && ct.RowsAffected() > 0
+}
+
+func (s *PostgresStore) SetGameEnabled(gameID string, enabled bool) error {
+	_, err := s.pool.Exec(s.ctx,
+		`INSERT INTO game_flags (game_id, enabled) VALUES ($1,$2)
+		 ON CONFLICT (game_id) DO UPDATE SET enabled = EXCLUDED.enabled`, gameID, enabled)
+	return err
 }
 
 func (s *PostgresStore) RateGame(gameID, userID string, stars int) error {
