@@ -31,6 +31,10 @@ type GameVersion struct {
 	// published but is hidden from the catalog and can't start new matches. Filled
 	// by ListLatest; defaults to true (enabled) for any game with no flag row.
 	Enabled bool `json:"enabled"`
+	// HasUI is true when this version shipped a self-contained sandboxed UI bundle
+	// (Option 2). Filled by ListLatest so the frontend can auto-pick the custom UI
+	// renderer for any marketplace game without curation.
+	HasUI bool `json:"hasUI"`
 }
 
 // RatingAgg is a game's aggregated player rating (mean stars + how many raters).
@@ -133,6 +137,7 @@ func (s *LocalStore) ListLatest() []GameVersion {
 		if latest != nil {
 			cp := *latest
 			cp.Enabled = !s.disabled[cp.GameID]
+			cp.HasUI = s.ui[blobKey(cp.GameID, cp.Version)] != nil
 			out = append(out, cp)
 		}
 	}

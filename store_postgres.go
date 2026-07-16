@@ -96,7 +96,8 @@ func (s *PostgresStore) ListLatest() []GameVersion {
 		`SELECT DISTINCT ON (gv.game_id)
 		    gv.game_id, gv.version, gv.display_name, gv.board, gv.min_players, gv.max_players,
 		    gv.wasm_sha, gv.wasm_bytes, gv.status, gv.manifest, gv.created_at,
-		    COALESCE(f.enabled, true) AS enabled
+		    COALESCE(f.enabled, true) AS enabled,
+		    EXISTS (SELECT 1 FROM game_ui u WHERE u.game_id = gv.game_id AND u.version = gv.version) AS has_ui
 		 FROM game_versions gv
 		 LEFT JOIN game_flags f ON f.game_id = gv.game_id
 		 WHERE gv.status = 'published'
@@ -113,7 +114,7 @@ func (s *PostgresStore) ListLatest() []GameVersion {
 		)
 		if err := rows.Scan(
 			&v.GameID, &v.Version, &v.DisplayName, &v.Board, &v.MinPlayers, &v.MaxPlayers,
-			&v.WasmSHA, &v.WasmBytes, &v.Status, &manifest, &v.CreatedAt, &v.Enabled); err != nil {
+			&v.WasmSHA, &v.WasmBytes, &v.Status, &manifest, &v.CreatedAt, &v.Enabled, &v.HasUI); err != nil {
 			continue
 		}
 		v.Manifest = manifest
